@@ -7,6 +7,7 @@ import PreVisualizacaoLote from './components/PreVisualizacaoLote';
 import AjudaEmissao from './components/AjudaEmissao';
 import './App.css';
 import { CURSO_PADRAO } from './cursos';
+import { RA_EXTERNO, ehExterno } from './registroAcademico';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL;
 
@@ -130,10 +131,18 @@ const validarFormulario = ({ formData, arquivoCsv, apiKey, emissaoTipo }) => {
     };
   }
 
-  if (campoVazio(formData.raParticipante)) {
+  if (!formData.participanteExterno && campoVazio(formData.raParticipante)) {
     return {
       titulo: 'RA obrigatório',
-      detalhe: 'Informe o Registro Acadêmico do participante. Caso ele não tenha RA, confirme o procedimento antes de emitir.'
+      detalhe: 'Informe o Registro Acadêmico do participante. Se ele não tiver RA (palestrante, aluno de outra instituição), marque "Participante externo".'
+    };
+  }
+
+  // EXTERNO digitado no RA: sem o checkbox o curso iria junto e o backend recusaria (F8)
+  if (!formData.participanteExterno && ehExterno(formData.raParticipante)) {
+    return {
+      titulo: 'Participante externo',
+      detalhe: 'Para quem não tem RA, marque "Participante externo" em vez de digitar EXTERNO no campo RA.'
     };
   }
 
@@ -175,7 +184,7 @@ const montarMensagemErro = (error, emissaoTipo, isPrevia = false) => {
       return {
         titulo: 'Dados recusados pelo servidor',
         detalhe: detalheServidor || (emissaoTipo === 'lote'
-          ? 'Confira se a primeira linha do CSV é o cabeçalho e tem as colunas Nome e E-mail (RA é opcional; a ordem não importa).'
+          ? 'Confira se a primeira linha do CSV é o cabeçalho e tem as colunas Nome, E-mail e RA (a ordem não importa).'
           : 'Confira nome, RA, e-mail, data e carga horária do participante.')
       };
     }
@@ -263,7 +272,7 @@ function App() {
   const [formData, setFormData] = useState({
     nomeEvento: '', dataRealizacao: '', dataFim: '', cargaHoraria: '',
     nomeParticipante: '', emailParticipante: '', raParticipante: '',
-    cursoPadrao: CURSO_PADRAO, cursoParticipante: CURSO_PADRAO
+    cursoPadrao: CURSO_PADRAO, cursoParticipante: CURSO_PADRAO, participanteExterno: false
   });
   const [arquivoCsv, setArquivoCsv] = useState(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -381,14 +390,20 @@ function App() {
     const toastId = toast.loading('Gerando certificado unitário, enviando e-mail e registrando backup...');
 
     try {
+      // participanteExterno é só do formulário: EmissaoIndividualRequestDTO não tem esse campo
+      const { participanteExterno, ...dadosFormulario } = formData;
       const payload = {
-        ...formData,
+        ...dadosFormulario,
         nomeEvento: formData.nomeEvento.trim(),
         cargaHoraria: String(formData.cargaHoraria).replace(',', '.'),
         nomeParticipante: formData.nomeParticipante.trim(),
         emailParticipante: formData.emailParticipante.trim(),
-        raParticipante: formData.raParticipante.trim()
+        raParticipante: participanteExterno ? RA_EXTERNO : formData.raParticipante.trim()
       };
+      // Externo (F8) não tem curso: a chave não vai, senão o backend responde 400
+      if (participanteExterno) {
+        delete payload.cursoParticipante;
+      }
       // Fim vazio = evento de um dia: o campo não vai, como no frontend anterior à F3
       if (campoVazio(payload.dataFim)) {
         delete payload.dataFim;
@@ -425,7 +440,7 @@ function App() {
     setFormData({
       nomeEvento: '', dataRealizacao: '', dataFim: '', cargaHoraria: '',
       nomeParticipante: '', emailParticipante: '', raParticipante: '',
-      cursoPadrao: CURSO_PADRAO, cursoParticipante: CURSO_PADRAO
+      cursoPadrao: CURSO_PADRAO, cursoParticipante: CURSO_PADRAO, participanteExterno: false
     });
   };
 

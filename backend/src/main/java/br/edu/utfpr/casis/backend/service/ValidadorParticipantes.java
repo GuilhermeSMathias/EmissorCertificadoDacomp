@@ -29,14 +29,23 @@ final class ValidadorParticipantes {
     /**
      * Valida as linhas do CSV na ordem do arquivo.
      * <p>
-     * Erros (a linha não é emitida): nome vazio, e-mail vazio ou fora do padrão, e-mail repetido, horas inválidas.
-     * Avisos (a linha é emitida): homônimo que gera o mesmo nome de PDF, RA não informado.
+     * Erros (a linha não é emitida), nesta ordem: nome vazio, e-mail vazio ou fora do padrão, e-mail repetido,
+     * RA não informado (F8), horas inválidas, curso inválido, participante externo com curso (F8).
+     * Avisos (a linha é emitida), nesta ordem: homônimo que gera o mesmo nome de PDF, participante externo (F8).
      * Repetição e homônimo só são comparados com linhas anteriores que serão emitidas.
+     * <p>
+     * RA (F8): obrigatório. O valor {@link RegistroAcademico#EXTERNO} (sem diferenciar maiúsculas e minúsculas,
+     * sem espaços nas bordas) marca um participante externo: a linha recebe o aviso "Participante externo" e é
+     * emitida se a coluna {@code Curso} estiver vazia ou ausente; com a coluna preenchida, válida ou não, vira o
+     * erro "Participante externo não tem curso". O curso do externo não é resolvido nem herda o curso padrão do
+     * formulário: {@code curso} e {@code cursoTexto} vão nulos e {@code cursoDoFormulario} vai {@code false}.
+     * O {@code ra} da linha validada vem normalizado por {@link RegistroAcademico#normalizar} (externo sai {@code EXTERNO}).
      * <p>
      * Horas (F2): a coluna {@code Horas} preenchida prevalece; célula vazia ou coluna ausente usa a carga do formulário.
      * <p>
      * Curso (F4): a coluna {@code Curso} preenchida prevalece e precisa ser um apelido configurado
      * (senão a linha é erro); célula vazia ou coluna ausente usa o curso padrão do formulário.
+     * Não vale para o participante externo (veja acima).
      *
      * @param linhas linhas brutas lidas do CSV.
      * @param cargaPadrao carga horária do formulário, em horas decimais, usada quando a linha não traz horas.
@@ -62,10 +71,18 @@ final class ValidadorParticipantes {
                     ? cargaPadrao
                     : InterpretadorHoras.interpretar(linha.horas()).orElse(null);
 
-            boolean cursoDoFormulario = linha.curso() == null || linha.curso().isBlank();
-            String curso = cursoDoFormulario
-                    ? cursoPadrao
-                    : interpretadorCurso.interpretar(linha.curso()).orElse(null);
+            boolean externo = RegistroAcademico.ehExterno(linha.ra());
+            boolean cursoVazio = linha.curso() == null || linha.curso().isBlank();
+            // Externo (F8): sem curso, nem o padrão do formulário.
+            boolean cursoDoFormulario = !externo && cursoVazio;
+            String curso;
+            if (externo) {
+                curso = null;
+            } else if (cursoDoFormulario) {
+                curso = cursoPadrao;
+            } else {
+                curso = interpretadorCurso.interpretar(linha.curso()).orElse(null);
+            }
             String cursoTexto = curso == null ? null
                     : interpretadorCurso.curso(curso).map(c -> c.nomeCompleto()).orElse(null);
 
@@ -82,11 +99,19 @@ final class ValidadorParticipantes {
                 erros.add("E-mail repetido (linha " + linhaPorEmail.get(chaveEmail) + ")");
             }
 
+            if (linha.ra() == null || linha.ra().isBlank()) {
+                erros.add("RA não informado");
+            }
+
             if (horas == null) {
                 erros.add("Horas inválidas: " + resumir(linha.horas()));
             }
 
-            if (curso == null) {
+            if (externo) {
+                if (!cursoVazio) {
+                    erros.add("Participante externo não tem curso");
+                }
+            } else if (curso == null) {
                 erros.add("Curso inválido: " + resumir(linha.curso()));
             }
 
@@ -102,8 +127,8 @@ final class ValidadorParticipantes {
             if (linhaPorArquivo.containsKey(nomeArquivo)) {
                 avisos.add("Mesmo nome da linha " + linhaPorArquivo.get(nomeArquivo) + ": o Drive terá dois arquivos com o mesmo nome");
             }
-            if (linha.ra() == null || linha.ra().isBlank()) {
-                avisos.add("RA não informado");
+            if (externo) {
+                avisos.add("Participante externo");
             }
 
             linhaPorEmail.put(chaveEmail, linha.linha());
@@ -167,14 +192,41 @@ final class ValidadorParticipantes {
     }
 
     /**
+     * Resolve o curso do participante da emissão unitária, levando em conta o participante externo (F8).
+     * <p>
+     * Externo ({@link RegistroAcademico#ehExterno}): não tem curso e não recebe o {@link #CURSO_LEGADO};
+     * com curso informado, válido ou não, a requisição é recusada. Demais participantes: delega a
+     * {@link #resolverCurso}.
+     *
+     * @param ra RA do participante, como veio na requisição.
+     * @param cursoParticipante código ou apelido do curso informado na requisição, ou {@code null}.
+     * @param interpretadorCurso cursos configurados da gestão.
+     * @return {@code null} para o participante externo; caso contrário, o código do curso (ex.: "SI").
+     * @throws DadosInvalidosException se o externo vier com curso ou se o curso não for um curso configurado.
+     */
+    static String resolverCursoDoParticipante(String ra, String cursoParticipante, InterpretadorCurso interpretadorCurso) {
+        if (!RegistroAcademico.ehExterno(ra)) {
+            return resolverCurso(cursoParticipante, interpretadorCurso);
+        }
+        if (cursoParticipante != null && !cursoParticipante.isBlank()) {
+            throw new DadosInvalidosException("Participante externo não tem curso.");
+        }
+        return null;
+    }
+
+    /**
      * Valida o participante da emissão unitária.
-     * Interrompe no primeiro problema encontrado.
+     * Interrompe no primeiro problema encontrado, nesta ordem: nome, e-mail, RA.
+     * <p>
+     * RA (F8): obrigatório, sem validação de formato. Participante externo usa {@link RegistroAcademico#EXTERNO}.
      *
      * @param nome nome do participante.
      * @param email e-mail do participante.
-     * @throws DadosInvalidosException se o nome estiver vazio ou o e-mail ausente ou fora do padrão.
+     * @param ra RA do participante, ou {@link RegistroAcademico#EXTERNO} para participante externo.
+     * @throws DadosInvalidosException se o nome estiver vazio, o e-mail ausente ou fora do padrão,
+     *                                 ou o RA nulo ou em branco.
      */
-    static void validarParticipante(String nome, String email) {
+    static void validarParticipante(String nome, String email, String ra) {
         if (nome == null || nome.isBlank()) {
             throw new DadosInvalidosException("O nome do participante é obrigatório.");
         }
@@ -183,6 +235,9 @@ final class ValidadorParticipantes {
         }
         if (!PADRAO_EMAIL.matcher(email.trim()).matches()) {
             throw new DadosInvalidosException("E-mail do participante inválido: " + email.trim());
+        }
+        if (ra == null || ra.isBlank()) {
+            throw new DadosInvalidosException("O RA do participante é obrigatório. Para participante externo, use EXTERNO.");
         }
     }
 
@@ -202,7 +257,7 @@ final class ValidadorParticipantes {
     private static LinhaValidadaDTO montar(LinhaCsv linha, Double horas, boolean horasDoFormulario, Curso curso,
                                            SituacaoLinha situacao, List<String> mensagens) {
         String horasTexto = horas == null ? null : CargaHorariaFormatter.formatarTexto(horas);
-        return new LinhaValidadaDTO(linha.linha(), linha.nome(), linha.email(), linha.ra(),
+        return new LinhaValidadaDTO(linha.linha(), linha.nome(), linha.email(), RegistroAcademico.normalizar(linha.ra()),
                 horas, horasTexto, horasDoFormulario, curso.codigo(), curso.texto(), curso.doFormulario(),
                 situacao, List.copyOf(mensagens));
     }

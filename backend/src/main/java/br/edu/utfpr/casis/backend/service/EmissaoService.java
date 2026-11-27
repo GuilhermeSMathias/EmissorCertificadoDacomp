@@ -124,7 +124,7 @@ public class EmissaoService {
             AlunoCertificado aluno = AlunoCertificadoEvento.builder()
                     .nome(linha.nome())
                     .email(linha.email())
-                    .ra(linha.ra())
+                    .ra(RegistroAcademico.normalizar(linha.ra())) // F8: externo vira "EXTERNO"
                     .tipoParticipacao(TipoParticipacao.OUVINTE) // Valor padrão para emissões em lote de forms comuns
                     .build();
 
@@ -173,14 +173,16 @@ public class EmissaoService {
     public ResultadoEmissaoDTO processarEmissaoIndividual(EmissaoIndividualRequestDTO dto) {
         // 0. Valida antes de qualquer efeito (F1). Lança DadosInvalidosException se algo estiver inválido.
         ValidadorParticipantes.validarEvento(dto.nomeEvento(), dto.dataRealizacao(), dto.dataFim(), dto.cargaHoraria());
-        ValidadorParticipantes.validarParticipante(dto.nomeParticipante(), dto.emailParticipante());
-        String curso = ValidadorParticipantes.resolverCurso(dto.cursoParticipante(), interpretadorCurso);
+        ValidadorParticipantes.validarParticipante(dto.nomeParticipante(), dto.emailParticipante(), dto.raParticipante());
+        // Externo (F8): curso nulo, sem o "SI" padrão; com curso informado, recusa.
+        String curso = ValidadorParticipantes.resolverCursoDoParticipante(
+                dto.raParticipante(), dto.cursoParticipante(), interpretadorCurso);
 
         // 1. Cria o aluno manualmente
         AlunoCertificado aluno = br.edu.utfpr.casis.backend.model.AlunoCertificadoEvento.builder()
                 .nome(dto.nomeParticipante().trim())
                 .email(dto.emailParticipante().trim())
-                .ra(dto.raParticipante())
+                .ra(RegistroAcademico.normalizar(dto.raParticipante())) // F8: externo vira "EXTERNO"
                 .build();
 
         // 2. Cria um DTO de lote "falso" (sem arquivo) só para o PdfService aceitar os dados do evento
